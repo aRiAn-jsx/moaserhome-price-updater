@@ -1,0 +1,72 @@
+name: Update Product Prices
+
+on:
+  # اجرا در صورت push فایل CSV جدید
+  push:
+    paths:
+      - 'prices.csv'
+      - 'prices/**'
+  
+  # اجرای دستی از GitHub Actions
+  workflow_dispatch:
+    inputs:
+      file:
+        description: 'نام فایل CSV (اختیاری)'
+        required: false
+        default: 'prices.csv'
+  
+  # اجرای زمان‌بندی شده (هر هفته دوشنبه ساعت 9 صبح)
+  schedule:
+    - cron: '0 9 * * 1'  # دوشنبه‌ها ساعت 9:00 UTC
+
+jobs:
+  update-prices:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 🛎️ دریافت کد مخزن
+      uses: actions/checkout@v4
+      
+    - name: 🐍 تنظیم Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+        
+    - name: 📦 نصب dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: 🔍 بررسی فایل CSV
+      run: |
+        FILE="${FILE:-prices.csv}"
+        echo "🔍 بررسی فایل: $FILE"
+        if [ ! -f "$FILE" ]; then
+          echo "❌ فایل $FILE پیدا نشد."
+          ls -la
+          exit 1
+        fi
+        echo "✅ فایل $FILE آماده است."
+        
+    - name: 🚀 اجرای اسکریپت به‌روزرسانی قیمت
+      env:
+        CPA_API_TOKEN: ${{ secrets.CPA_API_TOKEN }}
+      run: |
+        FILE="${FILE:-prices.csv}"
+        echo "🚀 شروع به‌روزرسانی قیمت‌ها..."
+        python update_prices.py "$FILE"
+        
+    - name: 📧 ارسال نوتیفیکیشن (اختیاری)
+      if: success()
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        SLACK_CHANNEL: '#updates'
+        SLACK_TITLE: '✅ قیمت‌ها به‌روز شد'
+        SLACK_MESSAGE: 'تغییرات قیمت با موفقیت به سایت ارسال شد. برای تأیید به پیشخوان وردپرس مراجعه کنید.'
+        
+    - name: 🗑️ پاکسازی (اختیاری)
+      if: always()
+      run: |
+        echo "🧹 پاکسازی فضای کاری..."
