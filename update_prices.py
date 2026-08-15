@@ -111,14 +111,20 @@ def send_to_plugin(changes: List[Dict]) -> bool:
         "X-API-Token":  API_TOKEN
     }
 
+    # ============================================================
+    # 🔥 تغییر اصلی اینجاست: توکن را به URL هم اضافه می‌کنیم
+    # ============================================================
+    url_with_token = f"{API_ENDPOINT}?token={API_TOKEN}"
+
     try:
         print(f"\n📤 ارسال {len(changes)} تغییر به {WORDPRESS_URL} ...")
-        
+        print(f"   آدرس: {url_with_token}")  # برای دیباگ
+
         # ارسال با timeout طولانی‌تر و غیرفعال کردن SSL verification
-        resp = requests.post(API_ENDPOINT, json=changes, headers=headers, timeout=180, verify=False)
-        
+        resp = requests.post(url_with_token, json=changes, headers=headers, timeout=180, verify=False)
+
         print(f"   پاسخ: {resp.status_code}")
-        
+
         if resp.status_code == 200:
             result = resp.json()
             received = result.get("count", 0)
@@ -158,20 +164,20 @@ def main():
     """تابع اصلی"""
     # دریافت مسیر فایل از آرگومان یا استفاده از مقدار پیش‌فرض
     file_path = sys.argv[1] if len(sys.argv) > 1 else "prices.csv"
-    
+
     print("🔄 شروع به‌روزرسانی قیمت‌ها...")
     print(f"📂 خواندن فایل: {file_path}")
-    
+
     changes = read_csv(file_path)
-    
+
     if not changes:
         print("❌ هیچ تغییر معتبری یافت نشد.")
         sys.exit(1)
-    
+
     print_summary(changes)
-    
+
     success = send_to_plugin(changes)
-    
+
     if success:
         print("\n✅ تغییرات با موفقیت ارسال شد.")
         print("   حالا به پیشخوان وردپرس → تأیید قیمت بروید و تغییرات را بررسی کنید.")
