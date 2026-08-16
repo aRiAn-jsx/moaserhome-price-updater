@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 اسکریپت به‌روزرسانی قیمت برای GitHub Actions
-این اسکریپت فایل CSV را از مخزن می‌خواند و به افزونه وردپرس ارسال می‌کند.
+این اسکریپت فایل CSV را از مخزن می‌خواند و به فایل PHP مستقل (update-prices.php) ارسال می‌کند.
 """
 
 import pandas as pd
@@ -13,17 +13,19 @@ from typing import List, Dict
 
 # ========== تنظیمات ==========
 WORDPRESS_URL = "https://moaserhome.ir"
-API_ENDPOINT  = f"{WORDPRESS_URL}/wp-json/cpa/v1/pending-changes"
+# ========== تغییر اصلی اینجاست: آدرس جدید فایل PHP مستقل ==========
+API_ENDPOINT  = f"{WORDPRESS_URL}/update-prices.php"
 API_TOKEN     = os.getenv("CPA_API_TOKEN")  # از Secrets GitHub می‌گیرد
 
 # ستون‌های مورد انتظار در فایل CSV
 REQUIRED_COLUMNS = ["code", "color", "price"]
 
-# غیرفعال کردن warnings برای SSL
+# غیرفعال کردن warnings برای SSL (چون هاست شما گواهی معتبر ندارد)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def read_csv(file_path: str) -> List[Dict]:
+    """خواندن فایل CSV و برگرداندن لیست تغییرات معتبر"""
     try:
         df = pd.read_csv(file_path, encoding="utf-8-sig")
     except FileNotFoundError:
@@ -33,12 +35,14 @@ def read_csv(file_path: str) -> List[Dict]:
         print(f"❌ خطا در خواندن فایل: {e}")
         sys.exit(1)
 
+    # بررسی ستون‌های مورد نیاز
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         print(f"❌ ستون‌های زیر در فایل وجود ندارند: {missing}")
         print(f"   ستون‌های موجود: {list(df.columns)}")
         sys.exit(1)
 
+    # حذف ردیف‌های خالی
     before = len(df)
     df = df.dropna(subset=REQUIRED_COLUMNS)
     dropped = before - len(df)
@@ -51,6 +55,7 @@ def read_csv(file_path: str) -> List[Dict]:
         sku   = str(row["code"]).strip()
         color = str(row["color"]).strip()
 
+        # اعتبارسنجی قیمت
         try:
             price = float(str(row["price"]).replace(",", "").strip())
             if price <= 0:
@@ -60,6 +65,7 @@ def read_csv(file_path: str) -> List[Dict]:
             errors += 1
             continue
 
+        # اعتبارسنجی SKU و رنگ
         if not sku or sku.lower() == "nan":
             print(f"⚠️  ردیف {i+2}: کد محصول خالی است.")
             errors += 1
@@ -80,7 +86,9 @@ def read_csv(file_path: str) -> List[Dict]:
 
     return changes
 
+
 def print_summary(changes: List[Dict]) -> None:
+    """نمایش خلاصه تغییرات"""
     print(f"\n{'='*55}")
     print(f"📊 خلاصه تغییرات ({len(changes)} محصول)")
     print(f"{'='*55}")
@@ -92,63 +100,46 @@ def print_summary(changes: List[Dict]) -> None:
         print(f"  ... و {len(changes)-10} محصول دیگر")
     print(f"{'='*55}")
 
+
 def send_to_plugin(changes: List[Dict]) -> bool:
+    """ارسال تغییرات به فایل PHP مستقل (update-prices.php)"""
     if not API_TOKEN:
         print("❌ CPA_API_TOKEN تنظیم نشده است. آن را در Secrets GitHub اضافه کنید.")
         sys.exit(1)
 
-    # تلاش اولیه با X-API-Token
+    # ============================================================
+    # 🔥 تغییر اصلی: توکن را فقط در هدر X-API-Token ارسال می‌کنیم
+    # ============================================================
     headers = {
         "Content-Type": "application/json",
         "X-API-Token":  API_TOKEN
     }
 
-    url = API_ENDPOINT
-
     try:
         print(f"\n📤 ارسال {len(changes)} تغییر به {WORDPRESS_URL} ...")
-        print(f"   آدرس: {url}")  # آدرس بدون توکن چاپ می‌شود
+        print(f"   آدرس: {API_ENDPOINT}")  # آدرس بدون توکن چاپ می‌شود
 
-        resp = requests.post(url, json=changes, headers=headers, timeout=180, verify=False)
+        # ارسال داده‌ها به فایل PHP مستقل
+        resp = requests.post(API_ENDPOINT, json=changes, headers=headers, timeout=180, verify=False)
+
         print(f"   پاسخ: {resp.status_code}")
 
         if resp.status_code == 200:
             result = resp.json()
             received = result.get("count", 0)
             skipped  = len(changes) - received
-            print(f"✅ افزونه داده‌ها را دریافت کرد.")
+            print(f"✅ داده‌ها با موفقیت دریافت شدند.")
             print(f"   تأیید شده در سایت : {received} محصول")
             if skipped > 0:
                 print(f"   پیدا نشد در سایت : {skipped} محصول (SKU یا رنگ اشتباه)")
             return True
 
-        # اگر 401 شد، تلاش دوم با Authorization: Bearer
-        if resp.status_code == 401:
-            print("⚠️ پاسخ 401 از سرور دریافت شد، تلاش مجدد با Authorization: Bearer ...")
-            headers_bearer = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {API_TOKEN}"
-            }
-            resp2 = requests.post(url, json=changes, headers=headers_bearer, timeout=180, verify=False)
-            print(f"   تلاش دوم پاسخ: {resp2.status_code}")
-            if resp2.status_code == 200:
-                result = resp2.json()
-                received = result.get("count", 0)
-                skipped  = len(changes) - received
-                print(f"✅ افزونه داده‌ها را دریافت کرد (با Authorization: Bearer).")
-                print(f"   تأیید شده در سایت : {received} محصول")
-                if skipped > 0:
-                    print(f"   پیدا نشد در سایت : {skipped} محصول (SKU یا رنگ اشتباه)")
-                return True
-            else:
-                resp = resp2
-
-        if resp.status_code == 401:
-            print("❌ توکن API اشتباه است یا مجوز کافی ندارد. مقدار CPA_API_TOKEN را بررسی کنید.")
+        elif resp.status_code == 401:
+            print("❌ توکن API اشتباه است. مقدار CPA_API_TOKEN را بررسی کنید.")
         elif resp.status_code == 403:
-            print("❌ دسترسی رد شد (403). توکن یا تنظیمات افزونه را بررسی کنید.")
+            print("❌ دسترسی رد شد (403). توکن یا تنظیمات فایل PHP را بررسی کنید.")
         elif resp.status_code == 404:
-            print("❌ آدرس API پیدا نشد (404). آیا افزونه فعال است؟")
+            print("❌ فایل update-prices.php پیدا نشد (404). آیا فایل در مسیر درست قرار دارد؟")
         else:
             print(f"❌ خطای سرور: {resp.status_code}")
             print(f"   پاسخ: {resp.text[:300]}")
@@ -156,6 +147,7 @@ def send_to_plugin(changes: List[Dict]) -> bool:
 
     except requests.exceptions.SSLError as e:
         print(f"❌ خطای SSL: {e}")
+        print("   (SSL غیرفعال شده است، اما اگر خطا ادامه داشت، گواهی سایت را بررسی کنید.)")
         return False
     except requests.exceptions.ConnectionError:
         print(f"❌ اتصال به {WORDPRESS_URL} برقرار نشد.")
@@ -167,16 +159,24 @@ def send_to_plugin(changes: List[Dict]) -> bool:
         print(f"❌ خطای غیرمنتظره: {type(e).__name__}: {e}")
         return False
 
+
 def main():
+    """تابع اصلی"""
     file_path = sys.argv[1] if len(sys.argv) > 1 else "prices.csv"
+
     print("🔄 شروع به‌روزرسانی قیمت‌ها...")
     print(f"📂 خواندن فایل: {file_path}")
+
     changes = read_csv(file_path)
+
     if not changes:
         print("❌ هیچ تغییر معتبری یافت نشد.")
         sys.exit(1)
+
     print_summary(changes)
+
     success = send_to_plugin(changes)
+
     if success:
         print("\n✅ تغییرات با موفقیت ارسال شد.")
         print("   حالا به پیشخوان وردپرس → تأیید قیمت بروید و تغییرات را بررسی کنید.")
@@ -184,6 +184,7 @@ def main():
     else:
         print("\n❌ ارسال تغییرات ناموفق بود.")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
