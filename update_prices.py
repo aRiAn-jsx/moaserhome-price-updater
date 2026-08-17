@@ -18,7 +18,7 @@ API_ENDPOINT  = f"{WORDPRESS_URL}/update-prices.php"
 API_TOKEN     = os.getenv("CPA_API_TOKEN")  # از Secrets GitHub می‌گیرد
 
 # ستون‌های مورد انتظار در فایل CSV
-REQUIRED_COLUMNS = ["code", "color", "price"]
+REQUIRED_COLUMNS = ["code", "price"]  # color اختیاری شد
 
 # غیرفعال کردن warnings برای SSL (چون هاست شما گواهی معتبر ندارد)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
