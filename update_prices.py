@@ -13,14 +13,13 @@ from typing import List, Dict
 
 # ========== تنظیمات ==========
 WORDPRESS_URL = "https://moaserhome.ir"
-# ========== تغییر اصلی اینجاست: آدرس جدید فایل PHP مستقل ==========
 API_ENDPOINT  = f"{WORDPRESS_URL}/update-prices.php"
 API_TOKEN     = os.getenv("CPA_API_TOKEN")  # از Secrets GitHub می‌گیرد
 
-# ستون‌های مورد انتظار در فایل CSV
-REQUIRED_COLUMNS = ["code", "price"]  # color اختیاری شد
+# ستون‌های مورد انتظار در فایل CSV (فقط code و price اجباری هستند)
+REQUIRED_COLUMNS = ["code", "price"]  # color اختیاری است
 
-# غیرفعال کردن warnings برای SSL (چون هاست شما گواهی معتبر ندارد)
+# غیرفعال کردن warnings برای SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
@@ -35,7 +34,7 @@ def read_csv(file_path: str) -> List[Dict]:
         print(f"❌ خطا در خواندن فایل: {e}")
         sys.exit(1)
 
-    # بررسی ستون‌های مورد نیاز
+    # بررسی ستون‌های مورد نیاز (فقط code و price)
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         print(f"❌ ستون‌های زیر در فایل وجود ندارند: {missing}")
@@ -50,10 +49,19 @@ def read_csv(file_path: str) -> List[Dict]:
         print(f"⚠️  {dropped} ردیف خالی/ناقص نادیده گرفته شد.")
 
     changes = []
-    errors  = 0
+    errors = 0
+
+    # بررسی وجود ستون color (اختیاری)
+    has_color = "color" in df.columns
+
     for i, row in df.iterrows():
-        sku   = str(row["code"]).strip()
-        color = str(row["color"]).strip()
+        sku = str(row["code"]).strip()
+
+        # اگر ستون color وجود دارد، مقدار آن را بگیر، در غیر این صورت خالی
+        if has_color:
+            color = str(row["color"]).strip() if pd.notna(row["color"]) else ""
+        else:
+            color = ""
 
         # اعتبارسنجی قیمت
         try:
@@ -65,19 +73,19 @@ def read_csv(file_path: str) -> List[Dict]:
             errors += 1
             continue
 
-        # اعتبارسنجی SKU و رنگ
+        # اعتبارسنجی SKU
         if not sku or sku.lower() == "nan":
             print(f"⚠️  ردیف {i+2}: کد محصول خالی است.")
             errors += 1
             continue
+
+        # اگر رنگ خالی است، فقط یک اخطار می‌دهیم (برای محصولات ساده مشکلی نیست)
         if not color or color.lower() == "nan":
-            print(f"⚠️  ردیف {i+2}: رنگ خالی است (SKU: {sku}).")
-            errors += 1
-            continue
+            print(f"⚠️  ردیف {i+2} (SKU: {sku}): رنگ خالی است (در صورت متغیر بودن محصول، ممکن است خطا دهد)")
 
         changes.append({
             "sku":       sku,
-            "color":     color,
+            "color":     color,  # ممکن است خالی باشد
             "new_price": price
         })
 
@@ -95,7 +103,8 @@ def print_summary(changes: List[Dict]) -> None:
     print(f"{'کد محصول':<15} {'رنگ':<20} {'قیمت جدید':>15}")
     print(f"{'-'*55}")
     for c in changes[:10]:
-        print(f"{c['sku']:<15} {c['color']:<20} {c['new_price']:>15,.0f}")
+        color_display = c['color'] if c['color'] else "—"
+        print(f"{c['sku']:<15} {color_display:<20} {c['new_price']:>15,.0f}")
     if len(changes) > 10:
         print(f"  ... و {len(changes)-10} محصول دیگر")
     print(f"{'='*55}")
@@ -107,9 +116,6 @@ def send_to_plugin(changes: List[Dict]) -> bool:
         print("❌ CPA_API_TOKEN تنظیم نشده است. آن را در Secrets GitHub اضافه کنید.")
         sys.exit(1)
 
-    # ============================================================
-    # 🔥 تغییر اصلی: توکن را فقط در هدر X-API-Token ارسال می‌کنیم
-    # ============================================================
     headers = {
         "Content-Type": "application/json",
         "X-API-Token":  API_TOKEN
@@ -117,9 +123,8 @@ def send_to_plugin(changes: List[Dict]) -> bool:
 
     try:
         print(f"\n📤 ارسال {len(changes)} تغییر به {WORDPRESS_URL} ...")
-        print(f"   آدرس: {API_ENDPOINT}")  # آدرس بدون توکن چاپ می‌شود
+        print(f"   آدرس: {API_ENDPOINT}")
 
-        # ارسال داده‌ها به فایل PHP مستقل
         resp = requests.post(API_ENDPOINT, json=changes, headers=headers, timeout=180, verify=False)
 
         print(f"   پاسخ: {resp.status_code}")
@@ -127,7 +132,7 @@ def send_to_plugin(changes: List[Dict]) -> bool:
         if resp.status_code == 200:
             result = resp.json()
             received = result.get("count", 0)
-            skipped  = len(changes) - received
+            skipped = len(changes) - received
             print(f"✅ داده‌ها با موفقیت دریافت شدند.")
             print(f"   تأیید شده در سایت : {received} محصول")
             if skipped > 0:
@@ -147,7 +152,6 @@ def send_to_plugin(changes: List[Dict]) -> bool:
 
     except requests.exceptions.SSLError as e:
         print(f"❌ خطای SSL: {e}")
-        print("   (SSL غیرفعال شده است، اما اگر خطا ادامه داشت، گواهی سایت را بررسی کنید.)")
         return False
     except requests.exceptions.ConnectionError:
         print(f"❌ اتصال به {WORDPRESS_URL} برقرار نشد.")
