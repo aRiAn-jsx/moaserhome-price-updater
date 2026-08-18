@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 اسکریپت به‌روزرسانی قیمت برای GitHub Actions
-این اسکریپت فایل CSV را از مخزن می‌خواند و به فایل PHP مستقل (update-prices.php) ارسال می‌کند.
 """
 
 import pandas as pd
@@ -11,20 +10,16 @@ import os
 import urllib3
 from typing import List, Dict
 
-# ========== تنظیمات ==========
 WORDPRESS_URL = "https://moaserhome.ir"
 API_ENDPOINT  = f"{WORDPRESS_URL}/update-prices.php"
-API_TOKEN     = os.getenv("CPA_API_TOKEN")  # از Secrets GitHub می‌گیرد
+API_TOKEN     = os.getenv("CPA_API_TOKEN")
 
-# ستون‌های مورد انتظار در فایل CSV (فقط code و price اجباری هستند)
-REQUIRED_COLUMNS = ["code", "price"]  # color اختیاری است
+REQUIRED_COLUMNS = ["code", "title", "price"]  # هر سه ستون اجباری
 
-# غیرفعال کردن warnings برای SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def read_csv(file_path: str) -> List[Dict]:
-    """خواندن فایل CSV و برگرداندن لیست تغییرات معتبر"""
     try:
         df = pd.read_csv(file_path, encoding="utf-8-sig")
     except FileNotFoundError:
@@ -34,14 +29,12 @@ def read_csv(file_path: str) -> List[Dict]:
         print(f"❌ خطا در خواندن فایل: {e}")
         sys.exit(1)
 
-    # بررسی ستون‌های مورد نیاز (فقط code و price)
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         print(f"❌ ستون‌های زیر در فایل وجود ندارند: {missing}")
         print(f"   ستون‌های موجود: {list(df.columns)}")
         sys.exit(1)
 
-    # حذف ردیف‌های خالی
     before = len(df)
     df = df.dropna(subset=REQUIRED_COLUMNS)
     dropped = before - len(df)
@@ -51,19 +44,9 @@ def read_csv(file_path: str) -> List[Dict]:
     changes = []
     errors = 0
 
-    # بررسی وجود ستون color (اختیاری)
-    has_color = "color" in df.columns
-
     for i, row in df.iterrows():
         sku = str(row["code"]).strip()
-
-        # اگر ستون color وجود دارد، مقدار آن را بگیر، در غیر این صورت خالی
-        if has_color:
-            color = str(row["color"]).strip() if pd.notna(row["color"]) else ""
-        else:
-            color = ""
-
-        # اعتبارسنجی قیمت
+        title = str(row["title"]).strip()
         try:
             price = float(str(row["price"]).replace(",", "").strip())
             if price <= 0:
@@ -73,19 +56,18 @@ def read_csv(file_path: str) -> List[Dict]:
             errors += 1
             continue
 
-        # اعتبارسنجی SKU
         if not sku or sku.lower() == "nan":
             print(f"⚠️  ردیف {i+2}: کد محصول خالی است.")
             errors += 1
             continue
-
-        # اگر رنگ خالی است، فقط یک اخطار می‌دهیم (برای محصولات ساده مشکلی نیست)
-        if not color or color.lower() == "nan":
-            print(f"⚠️  ردیف {i+2} (SKU: {sku}): رنگ خالی است (در صورت متغیر بودن محصول، ممکن است خطا دهد)")
+        if not title or title.lower() == "nan":
+            print(f"⚠️  ردیف {i+2}: عنوان محصول خالی است.")
+            errors += 1
+            continue
 
         changes.append({
-            "sku":       sku,
-            "color":     color,  # ممکن است خالی باشد
+            "sku":   sku,
+            "title": title,
             "new_price": price
         })
 
@@ -96,24 +78,21 @@ def read_csv(file_path: str) -> List[Dict]:
 
 
 def print_summary(changes: List[Dict]) -> None:
-    """نمایش خلاصه تغییرات"""
     print(f"\n{'='*55}")
     print(f"📊 خلاصه تغییرات ({len(changes)} محصول)")
     print(f"{'='*55}")
-    print(f"{'کد محصول':<15} {'رنگ':<20} {'قیمت جدید':>15}")
+    print(f"{'کد':<20} {'عنوان':<30} {'قیمت جدید':>15}")
     print(f"{'-'*55}")
     for c in changes[:10]:
-        color_display = c['color'] if c['color'] else "—"
-        print(f"{c['sku']:<15} {color_display:<20} {c['new_price']:>15,.0f}")
+        print(f"{c['sku']:<20} {c['title'][:28]:<30} {c['new_price']:>15,.0f}")
     if len(changes) > 10:
         print(f"  ... و {len(changes)-10} محصول دیگر")
     print(f"{'='*55}")
 
 
 def send_to_plugin(changes: List[Dict]) -> bool:
-    """ارسال تغییرات به فایل PHP مستقل (update-prices.php)"""
     if not API_TOKEN:
-        print("❌ CPA_API_TOKEN تنظیم نشده است. آن را در Secrets GitHub اضافه کنید.")
+        print("❌ CPA_API_TOKEN تنظیم نشده است.")
         sys.exit(1)
 
     headers = {
@@ -136,36 +115,19 @@ def send_to_plugin(changes: List[Dict]) -> bool:
             print(f"✅ داده‌ها با موفقیت دریافت شدند.")
             print(f"   تأیید شده در سایت : {received} محصول")
             if skipped > 0:
-                print(f"   پیدا نشد در سایت : {skipped} محصول (SKU یا رنگ اشتباه)")
+                print(f"   پیدا نشد در سایت : {skipped} محصول")
             return True
-
-        elif resp.status_code == 401:
-            print("❌ توکن API اشتباه است. مقدار CPA_API_TOKEN را بررسی کنید.")
-        elif resp.status_code == 403:
-            print("❌ دسترسی رد شد (403). توکن یا تنظیمات فایل PHP را بررسی کنید.")
-        elif resp.status_code == 404:
-            print("❌ فایل update-prices.php پیدا نشد (404). آیا فایل در مسیر درست قرار دارد؟")
         else:
-            print(f"❌ خطای سرور: {resp.status_code}")
+            print(f"❌ خطا: {resp.status_code}")
             print(f"   پاسخ: {resp.text[:300]}")
-        return False
+            return False
 
-    except requests.exceptions.SSLError as e:
-        print(f"❌ خطای SSL: {e}")
-        return False
-    except requests.exceptions.ConnectionError:
-        print(f"❌ اتصال به {WORDPRESS_URL} برقرار نشد.")
-        return False
-    except requests.exceptions.Timeout:
-        print("❌ سرور پاسخ نداد (timeout پس از 180 ثانیه).")
-        return False
     except Exception as e:
-        print(f"❌ خطای غیرمنتظره: {type(e).__name__}: {e}")
+        print(f"❌ خطا: {e}")
         return False
 
 
 def main():
-    """تابع اصلی"""
     file_path = sys.argv[1] if len(sys.argv) > 1 else "prices.csv"
 
     print("🔄 شروع به‌روزرسانی قیمت‌ها...")
@@ -183,7 +145,7 @@ def main():
 
     if success:
         print("\n✅ تغییرات با موفقیت ارسال شد.")
-        print("   حالا به پیشخوان وردپرس → تأیید قیمت بروید و تغییرات را بررسی کنید.")
+        print("   حالا به پیشخوان وردپرس → تأیید قیمت بروید.")
         sys.exit(0)
     else:
         print("\n❌ ارسال تغییرات ناموفق بود.")
